@@ -1,0 +1,511 @@
+{
+    "plugin_name": "AXCerberus WAF",
+    "plugin_slug": "axcerberus",
+    "config_version": "1.0.0",
+    "config_schema": [
+        {
+            "section": "Network",
+            "description": "Core network settings for the WAF reverse proxy",
+            "fields": [
+                {
+                    "key": "listen",
+                    "label": "HTTP Listen Address",
+                    "type": "string",
+                    "value": ":80",
+                    "description": "Address and port to listen on for HTTP traffic"
+                },
+                {
+                    "key": "listen_tls",
+                    "label": "HTTPS Listen Address",
+                    "type": "string",
+                    "value": "",
+                    "description": "Address and port for HTTPS (leave empty to disable)"
+                },
+                {
+                    "key": "tls_cert_file",
+                    "label": "TLS Certificate File",
+                    "type": "string",
+                    "value": "",
+                    "description": "Path to TLS certificate file"
+                },
+                {
+                    "key": "tls_key_file",
+                    "label": "TLS Key File",
+                    "type": "string",
+                    "value": "",
+                    "description": "Path to TLS private key file"
+                },
+                {
+                    "key": "upstream",
+                    "label": "Upstream Server",
+                    "type": "string",
+                    "value": "http://127.0.0.1:8181",
+                    "description": "Backend web server URL to proxy traffic to"
+                },
+                {
+                    "key": "trust_proxy_headers",
+                    "label": "Trust Proxy Headers",
+                    "type": "bool",
+                    "value": true,
+                    "description": "Forward X-Forwarded-For and X-Real-IP headers"
+                }
+            ]
+        },
+        {
+            "section": "Routing",
+            "description": "Domain and path routing configuration",
+            "fields": [
+                {
+                    "key": "domains",
+                    "label": "Allowed Domains",
+                    "type": "string",
+                    "value": "",
+                    "description": "Comma-separated list of allowed domains (empty = all). Supports wildcards: *.example.com"
+                },
+                {
+                    "key": "routes",
+                    "label": "Routes",
+                    "type": "string",
+                    "value": "",
+                    "description": "Comma-separated path prefixes to proxy"
+                }
+            ]
+        },
+        {
+            "section": "WAF Protection",
+            "description": "Core Web Application Firewall engine (Coraza/ModSecurity-compatible)",
+            "fields": [
+                {
+                    "key": "waf_enabled",
+                    "label": "WAF Enabled",
+                    "type": "bool",
+                    "value": true,
+                    "description": "Enable the Coraza WAF engine for request/response inspection"
+                },
+                {
+                    "key": "rules_files",
+                    "label": "Rules Files",
+                    "type": "string",
+                    "value": "/etc/aevonx/plugins/axcerberus/rules/*.conf",
+                    "description": "Glob pattern for WAF rule files (ModSecurity/Coraza format)"
+                },
+                {
+                    "key": "anomaly_threshold",
+                    "label": "Anomaly Score Threshold",
+                    "type": "number",
+                    "value": 5,
+                    "description": "Cumulative anomaly score before blocking a request"
+                }
+            ]
+        },
+        {
+            "section": "IP Guard",
+            "description": "IP-level concurrency limiting, allow/blocklists, and auto-block escalation",
+            "fields": [
+                {
+                    "key": "ip_max_concurrent_requests",
+                    "label": "Max Concurrent Requests Per IP",
+                    "type": "number",
+                    "value": 50,
+                    "description": "Maximum simultaneous connections from a single IP"
+                },
+                {
+                    "key": "ip_block_duration",
+                    "label": "Block Duration (seconds)",
+                    "type": "number",
+                    "value": 300,
+                    "description": "How long to block an IP after exceeding limits (-1 = permanent)"
+                },
+                {
+                    "key": "auto_block_escalation",
+                    "label": "Auto-Block Escalation",
+                    "type": "bool",
+                    "value": true,
+                    "description": "Progressive blocking: 5min → 1hr → 24hr → permanent"
+                },
+                {
+                    "key": "ip_allowlist_file",
+                    "label": "IP Allowlist File",
+                    "type": "string",
+                    "value": "/etc/aevonx/plugins/axcerberus/ip_allowlist.avx",
+                    "description": "Path to IP allowlist file (one IP or CIDR per line)"
+                },
+                {
+                    "key": "ip_blocklist_file",
+                    "label": "IP Blocklist File",
+                    "type": "string",
+                    "value": "/etc/aevonx/plugins/axcerberus/ip_blocklist.avx",
+                    "description": "Path to IP blocklist file (one IP or CIDR per line)"
+                }
+            ]
+        },
+        {
+            "section": "URL Lists",
+            "description": "URL-level allow/blocklists",
+            "fields": [
+                {
+                    "key": "url_allowlist",
+                    "label": "URL Allowlist",
+                    "type": "string",
+                    "value": "",
+                    "description": "Comma-separated URL paths to skip WAF inspection"
+                },
+                {
+                    "key": "url_blocklist",
+                    "label": "URL Blocklist",
+                    "type": "string",
+                    "value": "",
+                    "description": "Comma-separated URL paths to always block"
+                }
+            ]
+        },
+        {
+            "section": "GeoIP Blocking",
+            "description": "Block or allow traffic by country using MaxMind GeoLite2",
+            "fields": [
+                {
+                    "key": "geoip_db_path",
+                    "label": "GeoIP Database Path",
+                    "type": "string",
+                    "value": "/etc/aevonx/plugins/axcerberus/GeoLite2-Country.mmdb",
+                    "description": "Path to MaxMind GeoLite2-Country.mmdb file"
+                },
+                {
+                    "key": "geo_block_mode",
+                    "label": "GeoIP Mode",
+                    "type": "select",
+                    "value": "blocklist",
+                    "options": ["blocklist", "allowlist"],
+                    "description": "blocklist = block listed countries; allowlist = only allow listed"
+                },
+                {
+                    "key": "geo_block_countries",
+                    "label": "Blocked Countries",
+                    "type": "string",
+                    "value": "",
+                    "description": "Comma-separated ISO country codes to block (e.g. CN,RU,KP)"
+                },
+                {
+                    "key": "geo_allow_countries",
+                    "label": "Allowed Countries",
+                    "type": "string",
+                    "value": "",
+                    "description": "If geo_block_mode=allowlist, only these countries are allowed"
+                }
+            ]
+        },
+        {
+            "section": "Rate Limiting",
+            "description": "Sliding window adaptive rate limiting per IP per endpoint",
+            "fields": [
+                {
+                    "key": "rate_limit_enabled",
+                    "label": "Rate Limiting Enabled",
+                    "type": "bool",
+                    "value": true,
+                    "description": "Enable per-IP per-endpoint rate limiting"
+                },
+                {
+                    "key": "global_rate_limit",
+                    "label": "Global Rate Limit",
+                    "type": "number",
+                    "value": 300,
+                    "description": "Max requests per minute per IP for general endpoints"
+                },
+                {
+                    "key": "login_rate_limit",
+                    "label": "Login Rate Limit",
+                    "type": "number",
+                    "value": 10,
+                    "description": "Max requests per minute per IP for login endpoints"
+                },
+                {
+                    "key": "api_rate_limit",
+                    "label": "API Rate Limit",
+                    "type": "number",
+                    "value": 120,
+                    "description": "Max requests per minute per IP for /api/* endpoints"
+                },
+                {
+                    "key": "throttle_mode",
+                    "label": "Throttle Mode",
+                    "type": "bool",
+                    "value": false,
+                    "description": "Instead of blocking, add progressive delay to over-limit requests"
+                }
+            ]
+        },
+        {
+            "section": "Bot Detection",
+            "description": "User-Agent-based bot classification",
+            "fields": [
+                {
+                    "key": "bot_detection_enabled",
+                    "label": "Bot Detection Enabled",
+                    "type": "bool",
+                    "value": true,
+                    "description": "Classify requests as human, verified bot, or malicious scanner"
+                }
+            ]
+        },
+        {
+            "section": "Honeypot Traps",
+            "description": "Fake endpoints to detect and block attackers probing for vulnerabilities",
+            "fields": [
+                {
+                    "key": "honeypot_enabled",
+                    "label": "Honeypot Enabled",
+                    "type": "bool",
+                    "value": false,
+                    "description": "Enable honeypot trap endpoints"
+                },
+                {
+                    "key": "honeypot_paths",
+                    "label": "Trap Paths",
+                    "type": "string",
+                    "value": "/wp-admin,/phpmyadmin,/.env,/wp-login.php,/xmlrpc.php,/.git/config,/actuator",
+                    "description": "Comma-separated paths to use as traps"
+                },
+                {
+                    "key": "honeypot_auto_block",
+                    "label": "Auto-Block on Trap Hit",
+                    "type": "bool",
+                    "value": true,
+                    "description": "Automatically block IPs that access trap endpoints"
+                }
+            ]
+        },
+        {
+            "section": "DDoS Shield",
+            "description": "Layer 7 DDoS detection using EWMA baseline learning with auto-mitigation",
+            "fields": [
+                {
+                    "key": "ddos_enabled",
+                    "label": "DDoS Shield Enabled",
+                    "type": "bool",
+                    "value": true,
+                    "description": "Enable L7 DDoS detection and mitigation"
+                },
+                {
+                    "key": "ddos_auto_mitigate",
+                    "label": "Auto-Mitigate",
+                    "type": "bool",
+                    "value": true,
+                    "description": "Automatically escalate mitigation level during attacks"
+                },
+                {
+                    "key": "ddos_spike_multiplier",
+                    "label": "Spike Multiplier",
+                    "type": "number",
+                    "value": 3.0,
+                    "description": "QPS ratio above baseline to trigger spike detection"
+                },
+                {
+                    "key": "max_connections_per_ip",
+                    "label": "Max Connections Per IP",
+                    "type": "number",
+                    "value": 100,
+                    "description": "Maximum concurrent connections per IP"
+                }
+            ]
+        },
+        {
+            "section": "Credential Protection",
+            "description": "Detect and block credential stuffing and brute force login attacks",
+            "fields": [
+                {
+                    "key": "credential_protection_enabled",
+                    "label": "Credential Protection Enabled",
+                    "type": "bool",
+                    "value": true,
+                    "description": "Monitor login endpoints for brute force attacks"
+                },
+                {
+                    "key": "login_paths",
+                    "label": "Login Paths",
+                    "type": "string",
+                    "value": "/login,/signin,/auth,/api/login,/api/auth,/wp-login.php",
+                    "description": "Comma-separated POST paths to monitor for credential attacks"
+                },
+                {
+                    "key": "max_login_attempts_per_ip",
+                    "label": "Max Login Attempts Per IP",
+                    "type": "number",
+                    "value": 20,
+                    "description": "Max login attempts per IP per hour before blocking"
+                },
+                {
+                    "key": "max_login_attempts_per_username",
+                    "label": "Max Login Attempts Per Username",
+                    "type": "number",
+                    "value": 10,
+                    "description": "Max login attempts per username per hour"
+                }
+            ]
+        },
+        {
+            "section": "Data Leak Prevention",
+            "description": "Scan response bodies for sensitive data (credit cards, API keys, stack traces)",
+            "fields": [
+                {
+                    "key": "dlp_enabled",
+                    "label": "DLP Enabled",
+                    "type": "bool",
+                    "value": true,
+                    "description": "Enable response body scanning for data leaks"
+                },
+                {
+                    "key": "dlp_mode",
+                    "label": "DLP Mode",
+                    "type": "select",
+                    "value": "log",
+                    "options": ["block", "mask", "log"],
+                    "description": "block = return 500, mask = replace with [REDACTED], log = log only"
+                },
+                {
+                    "key": "dlp_credit_cards",
+                    "label": "Detect Credit Cards",
+                    "type": "bool",
+                    "value": true,
+                    "description": "Detect credit card numbers with Luhn validation"
+                },
+                {
+                    "key": "dlp_api_keys",
+                    "label": "Detect API Keys",
+                    "type": "bool",
+                    "value": true,
+                    "description": "Detect AWS, GitHub, Stripe, OpenAI, Slack API keys"
+                },
+                {
+                    "key": "dlp_stack_traces",
+                    "label": "Detect Stack Traces",
+                    "type": "bool",
+                    "value": true,
+                    "description": "Detect PHP, Python, Java, Node, Go, .NET stack traces and DB errors"
+                }
+            ]
+        },
+        {
+            "section": "SSRF Prevention",
+            "description": "Block Server-Side Request Forgery attacks",
+            "fields": [
+                {
+                    "key": "ssrf_enabled",
+                    "label": "SSRF Prevention Enabled",
+                    "type": "bool",
+                    "value": true,
+                    "description": "Block requests targeting internal IPs, metadata endpoints, and dangerous URL schemes"
+                }
+            ]
+        },
+        {
+            "section": "Alerts",
+            "description": "Security event alerting via webhooks",
+            "fields": [
+                {
+                    "key": "alerts_enabled",
+                    "label": "Alerts Enabled",
+                    "type": "bool",
+                    "value": false,
+                    "description": "Enable webhook alerting for security events"
+                },
+                {
+                    "key": "alert_webhook_url",
+                    "label": "Webhook URL",
+                    "type": "string",
+                    "value": "",
+                    "description": "URL to POST alert JSON payloads to"
+                },
+                {
+                    "key": "alert_max_per_hour",
+                    "label": "Max Alerts Per Hour",
+                    "type": "number",
+                    "value": 10,
+                    "description": "Maximum alerts per event type per hour (throttle)"
+                },
+                {
+                    "key": "alert_severity_threshold",
+                    "label": "Minimum Severity",
+                    "type": "select",
+                    "value": "high",
+                    "options": ["low", "medium", "high", "critical"],
+                    "description": "Only send alerts at or above this severity level"
+                }
+            ]
+        },
+        {
+            "section": "Stats API",
+            "description": "Local REST API for real-time monitoring (accessed via SSH tunnel)",
+            "fields": [
+                {
+                    "key": "stats_api_enabled",
+                    "label": "Stats API Enabled",
+                    "type": "bool",
+                    "value": true,
+                    "description": "Enable the local stats REST API"
+                },
+                {
+                    "key": "stats_api_listen",
+                    "label": "Stats API Listen Address",
+                    "type": "string",
+                    "value": "127.0.0.1:9443",
+                    "description": "Address for the stats API (localhost only for security)"
+                }
+            ]
+        },
+        {
+            "section": "Timeouts",
+            "description": "HTTP server timeout configuration",
+            "fields": [
+                {
+                    "key": "read_timeout_seconds",
+                    "label": "Read Timeout",
+                    "type": "number",
+                    "value": 30,
+                    "description": "HTTP request read timeout in seconds"
+                },
+                {
+                    "key": "write_timeout_seconds",
+                    "label": "Write Timeout",
+                    "type": "number",
+                    "value": 30,
+                    "description": "HTTP response write timeout in seconds"
+                }
+            ]
+        },
+        {
+            "section": "Logging",
+            "description": "Log file paths for different log channels",
+            "fields": [
+                {
+                    "key": "access_log_file",
+                    "label": "Access Log",
+                    "type": "string",
+                    "value": "/var/log/aevonx/plugins/axcerberus/waf.access.log",
+                    "description": "Path to access log file"
+                },
+                {
+                    "key": "error_log_file",
+                    "label": "Error Log",
+                    "type": "string",
+                    "value": "/var/log/aevonx/plugins/axcerberus/waf.error.log",
+                    "description": "Path to error log file"
+                },
+                {
+                    "key": "warning_log_file",
+                    "label": "Warning Log",
+                    "type": "string",
+                    "value": "/var/log/aevonx/plugins/axcerberus/waf.warning.log",
+                    "description": "Path to warning log file"
+                },
+                {
+                    "key": "security_log_file",
+                    "label": "Security Log",
+                    "type": "string",
+                    "value": "/var/log/aevonx/plugins/axcerberus/waf.security.log",
+                    "description": "Path to security events log file"
+                }
+            ]
+        }
+    ]
+}

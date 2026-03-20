@@ -1,0 +1,66 @@
+{
+    "name": "AXCerberus WAF",
+    "slug": "axcerberus",
+    "description": "Enterprise-grade Web Application Firewall with DDoS protection, honeypot traps, credential stuffing detection, DLP, and SSRF prevention",
+    "version": "1.0.0",
+    "icon": "shield.lefthalf.filled",
+
+    "binary": "/usr/local/bin/axcerberus exec",
+    "arg_style": "positional",
+    "service_name": "axcerberus",
+    "config_dir": "/etc/aevonx/plugins/axcerberus",
+    "hooks_dir": "/etc/aevonx/hooks/axcerberus",
+
+    "allowed_actions": [
+        "waf.stats.overview",
+        "waf.stats.blocked_today",
+        "waf.stats.protection_rate",
+        "waf.stats.qps",
+        "waf.stats.attack_timeline",
+        "waf.stats.attack_types",
+        "waf.stats.countries",
+        "waf.stats.top_attackers",
+        "waf.stats.top_uris",
+        "waf.stats.domains",
+
+        "waf.ddos.status",
+
+        "waf.honeypot.hits",
+
+        "waf.credential.status",
+
+        "waf.service.status",
+
+        "waf.blocklist.list",
+        "waf.blocklist.add",
+        "waf.blocklist.remove",
+
+        "waf.allowlist.list",
+        "waf.allowlist.add",
+        "waf.allowlist.remove",
+
+        "waf.config.show"
+    ],
+
+    "health_check": {
+        "type": "systemd",
+        "service_name": "axcerberus",
+        "interval": 30,
+        "success_pattern": "active"
+    },
+
+    "lifecycle": {
+        "directories": [
+            "/var/log/aevonx/plugins/axcerberus:0755",
+            "/etc/aevonx/plugins/axcerberus:0755",
+            "/etc/aevonx/plugins/axcerberus/rules:0755"
+        ],
+        "systemd": {
+            "description": "AXCerberus WAF",
+            "exec_args": "-config /etc/aevonx/plugins/axcerberus/config.avx",
+            "user": "aevonx-waf",
+            "restart_sec": 5,
+            "capabilities": ["CAP_NET_BIND_SERVICE"]
+        }
+    }
+}
