@@ -37,6 +37,9 @@ var actions = map[string]func(args []string) (any, error){
 	"waf.stats.top_attackers":   actionStatsSimple("/api/v1/stats/top-attackers"),
 	"waf.stats.top_uris":        actionStatsSimple("/api/v1/stats/top-uris"),
 	"waf.stats.domains":         actionStatsSimple("/api/v1/stats/domains"),
+	"waf.stats.response_times":  actionStatsSimple("/api/v1/stats/response-times"),
+	"waf.stats.status_codes":    actionStatsSimple("/api/v1/stats/status-codes"),
+	"waf.stats.bot_details":     actionStatsSimple("/api/v1/stats/bot-details"),
 
 	// DDoS
 	"waf.ddos.status": actionStatsSimple("/api/v1/ddos/status"),
@@ -46,6 +49,13 @@ var actions = map[string]func(args []string) (any, error){
 
 	// Credential
 	"waf.credential.status": actionStatsSimple("/api/v1/credential/status"),
+
+	// Alerts
+	"waf.alerts.recent": actionStatsSimple("/api/v1/alerts/recent"),
+
+	// Logs
+	"waf.logs.access": actionStatsSimple("/api/v1/logs/access"),
+	"waf.logs.blocks": actionStatsSimple("/api/v1/logs/blocks"),
 
 	// Service
 	"waf.service.status": actionServiceStatus,
@@ -60,8 +70,15 @@ var actions = map[string]func(args []string) (any, error){
 	"waf.allowlist.add":    actionAllowlistAdd,
 	"waf.allowlist.remove": actionAllowlistRemove,
 
+	// GeoIP
+	"waf.geoip.list":   actionGeoIPList,
+	"waf.geoip.add":    actionGeoIPAdd,
+	"waf.geoip.remove": actionGeoIPRemove,
+
 	// Config
 	"waf.config.show": actionConfigShow,
+	"waf.config.all":  actionConfigAll,
+	"waf.config.set":  actionConfigSet,
 }
 
 // RunExec dispatches a CLI exec invocation.
@@ -169,6 +186,112 @@ func actionConfigShow(_ []string) (any, error) {
 	return raw, nil
 }
 
+func actionConfigAll(_ []string) (any, error) {
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]any{}, nil
+		}
+		return nil, err
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+	result := make(map[string]any)
+	if schema, ok := raw["config_schema"].([]any); ok {
+		for _, sec := range schema {
+			section, _ := sec.(map[string]any)
+			fields, _ := section["fields"].([]any)
+			for _, f := range fields {
+				field, _ := f.(map[string]any)
+				if key, ok := field["key"].(string); ok {
+					result[key] = field["value"]
+				}
+			}
+		}
+	} else {
+		for k, v := range raw {
+			result[k] = v
+		}
+	}
+	return result, nil
+}
+
+func actionConfigSet(args []string) (any, error) {
+	if len(args) < 2 {
+		return nil, fmt.Errorf("usage: config.set <key> <value>")
+	}
+	key := args[0]
+	value := strings.Join(args[1:], " ")
+	if err := setConfigKey(key, value); err != nil {
+		return nil, err
+	}
+	reloadService()
+	return map[string]any{"key": key, "value": value, "ok": true}, nil
+}
+
+func setConfigKey(key, value string) error {
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			raw := map[string]any{key: parseConfigValue(value)}
+			out, _ := json.MarshalIndent(raw, "", "  ")
+			return os.WriteFile(configFile, out, 0o644)
+		}
+		return err
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	parsed := parseConfigValue(value)
+	updated := false
+	if _, ok := raw[key]; ok {
+		raw[key] = parsed
+		updated = true
+	}
+	if !updated {
+		if schema, ok := raw["config_schema"].([]any); ok {
+		outer:
+			for _, sec := range schema {
+				section, _ := sec.(map[string]any)
+				fields, _ := section["fields"].([]any)
+				for _, f := range fields {
+					field, _ := f.(map[string]any)
+					if field["key"] == key {
+						field["value"] = parsed
+						updated = true
+						break outer
+					}
+				}
+			}
+		}
+	}
+	if !updated {
+		raw[key] = parsed
+	}
+	out, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(configFile, out, 0o644)
+}
+
+func parseConfigValue(value string) any {
+	if b, err := strconv.ParseBool(value); err == nil {
+		return b
+	}
+	if n, err := strconv.Atoi(value); err == nil {
+		return n
+	}
+	if f, err := strconv.ParseFloat(value, 64); err == nil {
+		return f
+	}
+	return value
+}
+
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -241,5 +364,158 @@ func reloadService() {
 	exec.Command("systemctl", "reload", serviceName).Run()
 }
 
-// Used by strconv import
-var _ = strconv.Itoa
+// ---------------------------------------------------------------------------
+// GeoIP
+// ---------------------------------------------------------------------------
+
+func actionGeoIPList(_ []string) (any, error) {
+	codes, err := readGeoBlockCountries()
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"countries": codes, "count": len(codes)}, nil
+}
+
+func actionGeoIPAdd(args []string) (any, error) {
+	if len(args) < 1 {
+		return nil, fmt.Errorf("usage: geoip.add <CC>")
+	}
+	code := strings.ToUpper(strings.TrimSpace(args[0]))
+	codes, err := readGeoBlockCountries()
+	if err != nil {
+		return nil, err
+	}
+	for _, c := range codes {
+		if c == code {
+			return map[string]any{"added": false, "country": code}, nil
+		}
+	}
+	codes = append(codes, code)
+	if err := writeGeoBlockCountries(codes); err != nil {
+		return nil, err
+	}
+	reloadService()
+	return map[string]any{"added": true, "country": code}, nil
+}
+
+func actionGeoIPRemove(args []string) (any, error) {
+	if len(args) < 1 {
+		return nil, fmt.Errorf("usage: geoip.remove <CC>")
+	}
+	code := strings.ToUpper(strings.TrimSpace(args[0]))
+	codes, err := readGeoBlockCountries()
+	if err != nil {
+		return nil, err
+	}
+	var filtered []string
+	removed := false
+	for _, c := range codes {
+		if c == code {
+			removed = true
+			continue
+		}
+		filtered = append(filtered, c)
+	}
+	if err := writeGeoBlockCountries(filtered); err != nil {
+		return nil, err
+	}
+	reloadService()
+	return map[string]any{"removed": removed, "country": code}, nil
+}
+
+// readGeoBlockCountries reads the geo_block_countries list from the config file.
+func readGeoBlockCountries() ([]string, error) {
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []string{}, nil
+		}
+		return nil, err
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+	// Flat format
+	if val, ok := raw["geo_block_countries"]; ok {
+		if str, ok := val.(string); ok {
+			return parseCountryCodes(str), nil
+		}
+	}
+	// config_schema format
+	if schema, ok := raw["config_schema"].([]any); ok {
+		for _, sec := range schema {
+			section, _ := sec.(map[string]any)
+			fields, _ := section["fields"].([]any)
+			for _, f := range fields {
+				field, _ := f.(map[string]any)
+				if field["key"] == "geo_block_countries" {
+					if str, ok := field["value"].(string); ok {
+						return parseCountryCodes(str), nil
+					}
+				}
+			}
+		}
+	}
+	return []string{}, nil
+}
+
+// writeGeoBlockCountries persists the geo_block_countries list to the config file.
+func writeGeoBlockCountries(codes []string) error {
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		return err
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	value := strings.Join(codes, ",")
+	updated := false
+	// Flat format
+	if _, ok := raw["geo_block_countries"]; ok {
+		raw["geo_block_countries"] = value
+		updated = true
+	}
+	// config_schema format
+	if !updated {
+		if schema, ok := raw["config_schema"].([]any); ok {
+			for _, sec := range schema {
+				section, _ := sec.(map[string]any)
+				fields, _ := section["fields"].([]any)
+				for _, f := range fields {
+					field, _ := f.(map[string]any)
+					if field["key"] == "geo_block_countries" {
+						field["value"] = value
+						updated = true
+					}
+				}
+			}
+		}
+	}
+	if !updated {
+		raw["geo_block_countries"] = value
+	}
+	out, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(configFile, out, 0o644)
+}
+
+func parseCountryCodes(s string) []string {
+	if s == "" {
+		return []string{}
+	}
+	var codes []string
+	for _, c := range strings.Split(s, ",") {
+		if t := strings.ToUpper(strings.TrimSpace(c)); t != "" {
+			codes = append(codes, t)
+		}
+	}
+	if codes == nil {
+		return []string{}
+	}
+	return codes
+}
+

@@ -147,10 +147,19 @@ func main() {
 	// Alert dispatcher
 	alertDisp := alert.New(cfg.AlertsEnabled, cfg.AlertWebhookURL, cfg.AlertMaxPerHour, cfg.AlertSeverityThreshold)
 
-	// DLP scanner — note: applied as response middleware in proxy pipeline
-	// Declared here but used in proxy's buildHandler via config check
+	// DLP scanner
+	var dlpScanner *dlp.Scanner
 	if cfg.DLPEnabled {
-		_ = dlp.NewScanner(cfg.DLPMode, cfg.DLPCreditCards, cfg.DLPAPIKeys, cfg.DLPStackTraces)
+		dlpScanner = dlp.NewScanner(cfg.DLPMode, cfg.DLPCreditCards, cfg.DLPAPIKeys, cfg.DLPStackTraces)
+		dlpScanner.OnDetect = func(ev dlp.Event) {
+			statsEng.RecordDLPEvent()
+			alertDisp.Dispatch(alert.Alert{
+				Type:     alert.EventDLPDetection,
+				Severity: alert.SevHigh,
+				Message:  "DLP detected " + string(ev.Type) + " in " + ev.URI,
+			})
+			logs.Security.Warn("dlp_detection", "type", string(ev.Type), "uri", ev.URI, "ip", ev.IP, "matches", ev.Matches)
+		}
 		logs.Access.Info("dlp_scanner_enabled", "mode", cfg.DLPMode)
 	}
 
@@ -167,6 +176,7 @@ func main() {
 		DDoS:       ddosShield,
 		Credential: credDet,
 		Alert:      alertDisp,
+		DLP:        dlpScanner,
 	}
 
 	// Create server
@@ -182,6 +192,7 @@ func main() {
 	if cfg.StatsAPIEnabled && cfg.StatsAPIListen != "" {
 		apiSrv := stats.NewAPIServer(statsEng, cfg.StatsAPIListen)
 		apiSrv.SetModules(honeypotEng, ddosShield, credDet)
+		apiSrv.SetAlerts(alertDisp)
 		go func() {
 			logs.Access.Info("stats_api_starting", "addr", cfg.StatsAPIListen)
 			if err := apiSrv.Serve(ctx); err != nil {

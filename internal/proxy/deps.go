@@ -7,6 +7,7 @@ import (
 	"axcerberus/internal/config"
 	"axcerberus/internal/credential"
 	"axcerberus/internal/ddos"
+	"axcerberus/internal/dlp"
 	"axcerberus/internal/geoip"
 	"axcerberus/internal/honeypot"
 	"axcerberus/internal/logger"
@@ -27,4 +28,5 @@ type Deps struct {
 	DDoS       *ddos.Shield
 	Credential *credential.Detector
 	Alert      *alert.Dispatcher
+	DLP        *dlp.Scanner
 }

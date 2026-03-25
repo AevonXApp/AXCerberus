@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"time"
 
+	"axcerberus/internal/alert"
 	"axcerberus/internal/credential"
 	"axcerberus/internal/ddos"
 	"axcerberus/internal/honeypot"
@@ -25,6 +26,7 @@ type APIServer struct {
 	honeypot   *honeypot.Engine
 	ddos       *ddos.Shield
 	credential *credential.Detector
+	alerts     *alert.Dispatcher
 }
 
 // NewAPIServer creates a stats API server.
@@ -48,6 +50,16 @@ func NewAPIServer(engine *Engine, addr string) *APIServer {
 	mux.HandleFunc("/api/v1/credential/status", s.handleCredentialStatus)
 	mux.HandleFunc("/api/v1/honeypot/hits", s.handleHoneypotHits)
 
+	// Extended stats
+	mux.HandleFunc("/api/v1/stats/response-times", s.handleResponseTimes)
+	mux.HandleFunc("/api/v1/stats/status-codes", s.handleStatusCodes)
+	mux.HandleFunc("/api/v1/stats/bot-details", s.handleBotDetails)
+	mux.HandleFunc("/api/v1/alerts/recent", s.handleAlertsRecent)
+
+	// Request logs
+	mux.HandleFunc("/api/v1/logs/access", s.handleAccessLog)
+	mux.HandleFunc("/api/v1/logs/blocks", s.handleBlockLog)
+
 	// Health
 	mux.HandleFunc("/healthz", s.handleHealth)
 
@@ -66,6 +78,11 @@ func (s *APIServer) SetModules(hp *honeypot.Engine, dd *ddos.Shield, cred *crede
 	s.honeypot = hp
 	s.ddos = dd
 	s.credential = cred
+}
+
+// SetAlerts sets the alert dispatcher reference.
+func (s *APIServer) SetAlerts(a *alert.Dispatcher) {
+	s.alerts = a
 }
 
 // Serve starts the API server, blocking until ctx is cancelled.
@@ -147,6 +164,42 @@ func (s *APIServer) handleHoneypotHits(w http.ResponseWriter, r *http.Request) {
 	}
 	limit := queryInt(r, "limit", 50)
 	writeJSON(w, map[string]any{"hits": s.honeypot.GetHits(limit)})
+}
+
+// ---------------------------------------------------------------------------
+// Extended stats handlers
+// ---------------------------------------------------------------------------
+
+func (s *APIServer) handleResponseTimes(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, s.engine.GetResponseTimePercentiles())
+}
+
+func (s *APIServer) handleStatusCodes(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, map[string]any{"status_codes": s.engine.GetStatusCodes()})
+}
+
+func (s *APIServer) handleBotDetails(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, s.engine.GetBotDetails())
+}
+
+func (s *APIServer) handleAlertsRecent(w http.ResponseWriter, r *http.Request) {
+	if s.alerts == nil {
+		writeJSON(w, map[string]any{"alerts": []any{}, "count": 0})
+		return
+	}
+	limit := queryInt(r, "limit", 50)
+	alerts := s.alerts.GetRecent(limit)
+	writeJSON(w, map[string]any{"alerts": alerts, "count": len(alerts)})
+}
+
+func (s *APIServer) handleAccessLog(w http.ResponseWriter, r *http.Request) {
+	limit := queryInt(r, "limit", 100)
+	writeJSON(w, map[string]any{"entries": s.engine.GetAccessLog(limit), "total": s.engine.accessLogLen})
+}
+
+func (s *APIServer) handleBlockLog(w http.ResponseWriter, r *http.Request) {
+	limit := queryInt(r, "limit", 100)
+	writeJSON(w, map[string]any{"entries": s.engine.GetBlockLog(limit), "total": s.engine.blockLogLen})
 }
 
 func (s *APIServer) handleHealth(w http.ResponseWriter, r *http.Request) {

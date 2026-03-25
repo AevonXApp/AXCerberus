@@ -37,6 +37,14 @@ type Engine struct {
 	ddosLevel          atomic.Int32
 
 	startTime time.Time
+
+	// Ring buffers for logs
+	accessLog    [500]AccessLogEntry
+	accessLogIdx int
+	accessLogLen int
+	blockLog     [500]BlockLogEntry
+	blockLogIdx  int
+	blockLogLen  int
 }
 
 type DomainStats struct {
@@ -75,6 +83,58 @@ type CountryCount struct {
 type AttackTypeCount struct {
 	Type  string `json:"type"`
 	Count int64  `json:"count"`
+}
+
+type ResponseTimeStats struct {
+	P50     float64 `json:"p50"`
+	P95     float64 `json:"p95"`
+	P99     float64 `json:"p99"`
+	Avg     float64 `json:"avg"`
+	Max     float64 `json:"max"`
+	Samples int     `json:"samples"`
+}
+
+type StatusCodeCount struct {
+	Code  int   `json:"code"`
+	Count int64 `json:"count"`
+}
+
+type BotDetails struct {
+	TotalBot   int64   `json:"total_bot"`
+	TotalHuman int64   `json:"total_human"`
+	BotRate    float64 `json:"bot_rate"`
+}
+
+// AccessLogEntry records a single proxied request.
+type AccessLogEntry struct {
+	Timestamp   string `json:"timestamp"`
+	IP          string `json:"ip"`
+	Country     string `json:"country"`
+	CountryCode string `json:"country_code"`
+	Method      string `json:"method"`
+	Host        string `json:"host"`
+	Path        string `json:"path"`
+	StatusCode  int    `json:"status_code"`
+	LatencyMs   float64 `json:"latency_ms"`
+	BytesIn     int64  `json:"bytes_in"`
+	BytesOut    int64  `json:"bytes_out"`
+	UserAgent   string `json:"user_agent"`
+	IsBot       bool   `json:"is_bot"`
+}
+
+// BlockLogEntry records a single blocked request with the reason.
+type BlockLogEntry struct {
+	Timestamp   string `json:"timestamp"`
+	IP          string `json:"ip"`
+	Country     string `json:"country"`
+	CountryCode string `json:"country_code"`
+	Method      string `json:"method"`
+	Host        string `json:"host"`
+	Path        string `json:"path"`
+	Rule        string `json:"rule"`
+	Reason      string `json:"reason"`
+	Severity    string `json:"severity"`
+	UserAgent   string `json:"user_agent"`
 }
 
 type Overview struct {
@@ -292,6 +352,117 @@ func (e *Engine) GetDomains() map[string]*DomainStats {
 }
 
 func (e *Engine) GetQPS() float64 { return e.qps.rate() }
+
+// GetResponseTimePercentiles returns latency p50, p95, p99, avg, max.
+func (e *Engine) GetResponseTimePercentiles() ResponseTimeStats {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	n := len(e.responseTimes)
+	if n == 0 {
+		return ResponseTimeStats{}
+	}
+
+	sorted := make([]float64, n)
+	copy(sorted, e.responseTimes)
+	sort.Float64s(sorted)
+
+	var sum float64
+	for _, v := range sorted {
+		sum += v
+	}
+
+	return ResponseTimeStats{
+		P50:     sorted[n*50/100],
+		P95:     sorted[n*95/100],
+		P99:     sorted[min(n*99/100, n-1)],
+		Avg:     sum / float64(n),
+		Max:     sorted[n-1],
+		Samples: n,
+	}
+}
+
+// GetStatusCodes returns the HTTP status code distribution.
+func (e *Engine) GetStatusCodes() []StatusCodeCount {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	result := make([]StatusCodeCount, 0, len(e.statusCodes))
+	for code, count := range e.statusCodes {
+		result = append(result, StatusCodeCount{Code: code, Count: count})
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Count > result[j].Count })
+	return result
+}
+
+// GetBotDetails returns bot vs human traffic breakdown.
+func (e *Engine) GetBotDetails() BotDetails {
+	bot := e.botRequests.Load()
+	human := e.humanRequests.Load()
+	total := bot + human
+	var botRate float64
+	if total > 0 {
+		botRate = float64(bot) / float64(total) * 100
+	}
+	return BotDetails{
+		TotalBot:   bot,
+		TotalHuman: human,
+		BotRate:    botRate,
+	}
+}
+
+// RecordAccessLog adds an entry to the access log ring buffer.
+func (e *Engine) RecordAccessLog(entry AccessLogEntry) {
+	entry.Timestamp = time.Now().UTC().Format(time.RFC3339)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.accessLog[e.accessLogIdx] = entry
+	e.accessLogIdx = (e.accessLogIdx + 1) % len(e.accessLog)
+	if e.accessLogLen < len(e.accessLog) {
+		e.accessLogLen++
+	}
+}
+
+// RecordBlockLog adds an entry to the block log ring buffer.
+func (e *Engine) RecordBlockLog(entry BlockLogEntry) {
+	entry.Timestamp = time.Now().UTC().Format(time.RFC3339)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.blockLog[e.blockLogIdx] = entry
+	e.blockLogIdx = (e.blockLogIdx + 1) % len(e.blockLog)
+	if e.blockLogLen < len(e.blockLog) {
+		e.blockLogLen++
+	}
+}
+
+// GetAccessLog returns recent access log entries, newest first.
+func (e *Engine) GetAccessLog(limit int) []AccessLogEntry {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if limit <= 0 || limit > e.accessLogLen {
+		limit = e.accessLogLen
+	}
+	result := make([]AccessLogEntry, limit)
+	for i := 0; i < limit; i++ {
+		idx := (e.accessLogIdx - 1 - i + len(e.accessLog)) % len(e.accessLog)
+		result[i] = e.accessLog[idx]
+	}
+	return result
+}
+
+// GetBlockLog returns recent block log entries, newest first.
+func (e *Engine) GetBlockLog(limit int) []BlockLogEntry {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if limit <= 0 || limit > e.blockLogLen {
+		limit = e.blockLogLen
+	}
+	result := make([]BlockLogEntry, limit)
+	for i := 0; i < limit; i++ {
+		idx := (e.blockLogIdx - 1 - i + len(e.blockLog)) % len(e.blockLog)
+		result[i] = e.blockLog[idx]
+	}
+	return result
+}
 
 func splitCountryKey(key string) (code, name string) {
 	for i, c := range key {

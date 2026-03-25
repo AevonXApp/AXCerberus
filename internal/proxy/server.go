@@ -234,6 +234,11 @@ func (s *Server) buildHandler() error {
 		middlewares = append(middlewares, wafEngine.Middleware)
 	}
 
+	// DLP scanner (response middleware — wraps outgoing responses)
+	if s.deps.DLP != nil {
+		middlewares = append(middlewares, s.deps.DLP.Middleware)
+	}
+
 	// Compose the chain and apply to reverse proxy
 	chain := pipeline.Chain(middlewares...)
 	s.handler.Store(chain(rp))
