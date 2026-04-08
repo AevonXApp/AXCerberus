@@ -54,6 +54,7 @@ func NewAPIServer(engine *Engine, addr string) *APIServer {
 	mux.HandleFunc("/api/v1/stats/top-uris", s.handleTopURIs)
 	mux.HandleFunc("/api/v1/stats/domains", s.handleDomains)
 	mux.HandleFunc("/api/v1/stats/qps", s.handleQPS)
+	mux.HandleFunc("/api/v1/stats/timeseries", s.handleTimeSeries)
 
 	// New module endpoints
 	mux.HandleFunc("/api/v1/ddos/status", s.handleDDoSStatus)
@@ -171,6 +172,48 @@ func (s *APIServer) handleOverview(w http.ResponseWriter, r *http.Request) {
 
 func (s *APIServer) handleTimeline(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"timeline": s.engine.GetTimeline()})
+}
+
+func (s *APIServer) handleTimeSeries(w http.ResponseWriter, r *http.Request) {
+	start := r.URL.Query().Get("start")
+	end := r.URL.Query().Get("end")
+	granularity := r.URL.Query().Get("granularity")
+	if granularity == "" {
+		granularity = "1h"
+	}
+	if start == "" {
+		start = time.Now().Add(-24 * time.Hour).UTC().Format(time.RFC3339)
+	}
+	if end == "" {
+		end = time.Now().UTC().Format(time.RFC3339)
+	}
+
+	// Convert existing 24-hour timeline into time-series buckets
+	timeline := s.engine.GetTimeline()
+	buckets := make([]map[string]any, 0, len(timeline))
+	now := time.Now()
+	for i, b := range timeline {
+		// Each bucket represents an hour, oldest first
+		bucketTime := time.Date(now.Year(), now.Month(), now.Day(), b.Hour, 0, 0, 0, now.Location())
+		// If bucket hour is after current hour, it's from yesterday
+		if i < 24-1-now.Hour() {
+			bucketTime = bucketTime.Add(-24 * time.Hour)
+		}
+		buckets = append(buckets, map[string]any{
+			"timestamp":      bucketTime.UTC().Format(time.RFC3339),
+			"total":          b.Total,
+			"blocked":        b.Blocked,
+			"allowed":        b.Allowed,
+			"avg_latency_ms": 0,
+		})
+	}
+
+	writeJSON(w, map[string]any{
+		"buckets":     buckets,
+		"granularity": granularity,
+		"start":       start,
+		"end":         end,
+	})
 }
 
 func (s *APIServer) handleAttackTypes(w http.ResponseWriter, r *http.Request) {

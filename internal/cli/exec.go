@@ -40,6 +40,7 @@ var actions = map[string]func(args []string) (any, error){
 	"waf.stats.response_times":  actionStatsSimple("/api/v1/stats/response-times"),
 	"waf.stats.status_codes":    actionStatsSimple("/api/v1/stats/status-codes"),
 	"waf.stats.bot_details":     actionStatsSimple("/api/v1/stats/bot-details"),
+	"waf.stats.timeseries":      actionTimeSeries,
 
 	// DDoS
 	"waf.ddos.status": actionStatsSimple("/api/v1/ddos/status"),
@@ -113,6 +114,34 @@ func actionStatsProtectionRate(_ []string) (any, error)   { return apiGet("/api/
 
 func actionStatsSimple(endpoint string) func([]string) (any, error) {
 	return func(_ []string) (any, error) { return apiGet(endpoint) }
+}
+
+// actionTimeSeries handles waf.stats.timeseries [start] [end] [granularity]
+func actionTimeSeries(args []string) (any, error) {
+	start, end, granularity := "", "", ""
+	if len(args) > 0 {
+		start = args[0]
+	}
+	if len(args) > 1 {
+		end = args[1]
+	}
+	if len(args) > 2 {
+		granularity = args[2]
+	}
+	url := apiBase + "/api/v1/stats/timeseries"
+	sep := "?"
+	if start != "" {
+		url += sep + "start=" + start
+		sep = "&"
+	}
+	if end != "" {
+		url += sep + "end=" + end
+		sep = "&"
+	}
+	if granularity != "" {
+		url += sep + "granularity=" + granularity
+	}
+	return apiGetURL(url)
 }
 
 // ---------------------------------------------------------------------------
@@ -324,6 +353,19 @@ func parseConfigValue(value string) any {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+func apiGetURL(url string) (any, error) {
+	client := &http.Client{Timeout: httpTimeout}
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("api request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	var result any
+	json.Unmarshal(body, &result)
+	return result, nil
+}
 
 func apiGet(path string) (any, error) {
 	client := &http.Client{Timeout: httpTimeout}
